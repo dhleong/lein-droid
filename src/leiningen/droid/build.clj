@@ -6,7 +6,7 @@
          [main :only [debug info abort *debug*]]]
         [leiningen.droid
          [compile :only [compile]]
-         [utils :only [get-sdk-android-jar sh dev-build?
+         [utils :only [get-sdk-android-jar sh dev-build? release-build?
                        ensure-paths with-process read-password append-suffix
                        create-debug-keystore read-project resolve-dependencies
                        sdk-binary relativize-path get-sdk-annotations-jar
@@ -116,6 +116,68 @@
                              (map str))]
       (.addShutdownHook (Runtime/getRuntime) (Thread. #(.destroy proc))))))
 
+(defn- expand-classes-in-directory
+  [directory]
+  (->> (file-seq directory)
+       (filter #(.isFile ^File %))
+       (filter #(str/ends-with? (.getName ^File %) ".class"))
+       (map str)))
+
+(defn- run-d8
+  "Run d8 on the given target paths, each should be either a directory with
+  .class files or a jar file."
+  [{{:keys [out-dex-path force-dex-optimize dex-opts multi-dex
+            multi-dex-root-classes-path multi-dex-main-dex-list-path]} :android :as project}
+   target-paths]
+  (let [d8-bin (sdk-binary project :d8)
+        annotations (get-sdk-annotations-jar project)
+        expanded-target-paths (->> target-paths
+                                   (map
+                                     (fn [path]
+                                       (let [as-file (io/file path)]
+                                         (if (.isDirectory as-file)
+                                           (expand-classes-in-directory
+                                             as-file)
+                                           path))))
+                                   flatten
+                                   (concat annotations))
+        release? (or force-dex-optimize (release-build? project))
+        dex-batches (partition-all 1000 expanded-target-paths)]
+    (letfn [(do-d8 [to-dex intermediate?]
+              (with-process [proc (->> [d8-bin
+                                        to-dex
+                                        "--output" out-dex-path
+                                        (when intermediate?
+                                          "--intermediate")
+                                        (when release?
+                                          "--release")]
+                                       flatten
+                                       (keep identity)
+                                       (map str))]
+                (.addShutdownHook (Runtime/getRuntime) (Thread. #(.destroy proc)))))]
+      (if (= 1 (count dex-batches))
+        ; easy case
+        (do-d8 (first dex-batches) nil)
+
+        ; run d8 in batches, then run d8 on the resulting dex files
+        (do
+          (doseq [batch dex-batches]
+            (info "Batching" batch)
+            (do-d8 batch :intermediate))
+          (throw (Exception. "TODO composite d8"))
+          )))
+    
+    ))
+
+(defn- run-dexer
+  "Runs either dx or d8, whichever is preferred (TODO)"
+  [project target-paths]
+  (if true
+    (run-d8 project target-paths)
+
+    ;; fall back to dx
+    (run-dx project target-paths)))
+
 (defn create-dex
   "Creates a DEX file from the compiled .class files."
   [{{:keys [sdk-path external-classes-paths
@@ -124,10 +186,10 @@
   (if proguard-execute
     (do
       (run-proguard-minifying project)
-      (run-dx project [proguard-output-jar-path]))
+      (run-dexer project [proguard-output-jar-path]))
     (let [deps (resolve-dependencies project)
           external-classes-paths (or external-classes-paths [])]
-      (run-dx project (concat [compile-path] deps external-classes-paths)))))
+      (run-dexer project (concat [compile-path] deps external-classes-paths)))))
 
 (defn build
   "Metatask. Compiles the project and creates DEX."

@@ -58,7 +58,9 @@
   [sdk-path build-tools-version]
   (ensure-paths sdk-path)
   (let [build-tools (get-sdk-build-tools-path sdk-path build-tools-version)]
-    {:dx {:unix (file build-tools "dx")
+    {:d8 {:unix (file build-tools "d8")
+          :win (file build-tools "d8.bat")}
+     :dx {:unix (file build-tools "dx")
           :win (file build-tools "dx.bat")}
      :adb {:unix (file sdk-path "platform-tools" "adb")
            :win (file sdk-path "platform-tools" "adb.exe")}
@@ -294,11 +296,17 @@ Please install it from your Android SDK manager.")))]
                      (str arg)))]
     (with-process [process str-args])))
 
+(defn release-build?
+  "Checks the build type of the current project, assuming dev build if
+  not a release build"
+  [project]
+  (= (get-in project [:android :build-type]) :release))
+
 (defn dev-build?
   "Checks the build type of the current project, assuming dev build if
   not a release build"
   [project]
-  (not= (get-in project [:android :build-type]) :release))
+  (not (release-build? project)))
 
 (defn wrong-usage
   "Returns a string with the information about the proper function usage."
